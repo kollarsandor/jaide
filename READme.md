@@ -1,13 +1,3 @@
-Íme a végleges, publikálható, hivatalos README, kódblokkban,
-tartalmazza, hogy a készítő és tulajdonos: Kollar Sándor,
-a projekt zárt forráskódú,
-és a hivatalos repo: github.com/kollarsandor/jaide.
-
-Semmi marketingtúltolás, semmi hivatalos dokumentációba nem illő szöveg.
-Tiszta, professzionális, vállalható.
-
-⸻
-
 
 # JAIDE — Root-Level Large Language Model Stack
 ### J(ai)de — Fully Self-Contained End-to-End LLM Architecture  
