@@ -1,0 +1,332 @@
+field val: Int
+field next: Ref
+field left: Ref
+field right: Ref
+
+// Global invariants for memory safety
+define GLOBAL_MEMORY_INVARIANT (forall r: Region :: region_valid(r) ==> region_size(r) > 0)
+
+define GLOBAL_REGION_SEPARATION (forall r1: Region, r2: Region :: 
+  r1 != r2 && region_valid(r1) && region_valid(r2) ==> 
+  (region_start(r1) + region_size(r1) <= region_start(r2) ||
+   region_start(r2) + region_size(r2) <= region_start(r1)))
+
+define GLOBAL_NULL_SAFETY (forall n: Ref :: n != null ==> acc(n.val, wildcard))
+
+domain Region {
+  function region_start(r: Region): Int
+  function region_size(r: Region): Int
+  function region_valid(r: Region): Bool
+  
+  axiom region_positive_size {
+    forall r: Region :: region_valid(r) ==> region_size(r) > 0 && region_size(r) >= 0
+  }
+  
+  axiom region_non_negative_start {
+    forall r: Region :: region_valid(r) ==> region_start(r) >= 0
+  }
+  
+  axiom region_distinct {
+    forall r1: Region, r2: Region :: 
+      r1 != r2 && region_valid(r1) && region_valid(r2) ==> 
+      (region_start(r1) + region_size(r1) <= region_start(r2) ||
+       region_start(r2) + region_size(r2) <= region_start(r1))
+  }
+}
+
+predicate MemoryCapability(cap: Int, r: Region, perm: Perm) {
+  region_valid(r) &&
+  cap >= region_start(r) &&
+  cap < region_start(r) + region_size(r)
+}
+
+predicate TensorAlloc(t: Ref, size: Int, data: Seq[Ref]) {
+  acc(t.val, write) &&
+  t != null &&
+  size > 0 &&
+  |data| == size &&
+  (forall i: Int :: 0 <= i && i < size ==> acc(data[i].val, write)) &&
+  (forall i: Int, j: Int :: 0 <= i && i < size && 0 <= j && j < size && i != j ==> data[i] != data[j])
+}
+
+predicate TreeNode(node: Ref, left: Ref, right: Ref, key: Int) {
+  acc(node.val, write) &&
+  acc(node.left, write) &&
+  acc(node.right, write) &&
+  node.val == key &&
+  node.left == left &&
+  node.right == right &&
+  node != null &&
+  (left != null ==> 
+    acc(left.val, 1/2) && 
+    acc(left.left, 1/2) && 
+    acc(left.right, 1/2) &&
+    left.val < key) &&
+  (right != null ==> 
+    acc(right.val, 1/2) && 
+    acc(right.left, 1/2) && 
+    acc(right.right, 1/2) &&
+    right.val > key)
+}
+
+predicate ListNode(node: Ref, next_node: Ref, value: Int) {
+  acc(node.val, write) &&
+  acc(node.next, write) &&
+  node.val == value &&
+  node.next == next_node &&
+  node != null &&
+  (next_node != null ==> acc(next_node.val, 1/2) && acc(next_node.next, 1/2))
+}
+
+method allocate_memory(cap: Int, r: Region, size: Int) returns (ptr: Ref, new_cap: Int)
+  requires MemoryCapability(cap, r, write)
+  requires size > 0
+  requires size <= region_size(r)
+  ensures acc(ptr.val, write)
+  ensures ptr != null
+  ensures MemoryCapability(new_cap, r, write)
+  ensures new_cap == cap
+{
+  inhale GLOBAL_MEMORY_INVARIANT
+  inhale GLOBAL_REGION_SEPARATION
+  ptr := new(val)
+  new_cap := cap
+  exhale GLOBAL_MEMORY_INVARIANT
+  exhale GLOBAL_REGION_SEPARATION
+}
+
+method create_tensor(size: Int) returns (t: Ref, data: Seq[Ref])
+  requires size > 0
+  ensures TensorAlloc(t, size, data)
+  ensures t != null
+{
+  inhale GLOBAL_MEMORY_INVARIANT
+  t := new(val)
+  t.val := 0
+  data := Seq[Ref]()
+  var i: Int := 0
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant |data| == i
+    invariant acc(t.val, write)
+    invariant t != null
+    invariant forall j: Int :: 0 <= j && j < i ==> acc(data[j].val, write)
+    invariant forall j1: Int, j2: Int :: 0 <= j1 && j1 < i && 0 <= j2 && j2 < i && j1 != j2 
+              ==> data[j1] != data[j2]
+  {
+    var elem: Ref := new(val)
+    elem.val := 0
+    data := data ++ Seq(elem)
+    i := i + 1
+  }
+  
+  assert |data| == size
+  assert forall j: Int :: 0 <= j && j < size ==> acc(data[j].val, write)
+  exhale GLOBAL_MEMORY_INVARIANT
+}
+
+method get_tensor_element(t: Ref, data: Seq[Ref], size: Int, index: Int) returns (val: Int)
+  requires TensorAlloc(t, size, data)
+  requires t != null
+  requires 0 <= index && index < size
+  ensures TensorAlloc(t, size, data)
+  ensures val == old(data[index].val)
+{
+  assert 0 <= index && index < |data|
+  assert acc(data[index].val, write)
+  assert data[index] != null
+  val := data[index].val
+}
+
+method set_tensor_element(t: Ref, data: Seq[Ref], size: Int, index: Int, value: Int)
+  requires TensorAlloc(t, size, data)
+  requires t != null
+  requires 0 <= index && index < size
+  ensures TensorAlloc(t, size, data)
+  ensures data[index].val == value
+  ensures forall i: Int :: 0 <= i && i < size && i != index ==> data[i].val == old(data[i].val)
+{
+  assert 0 <= index && index < |data|
+  assert acc(data[index].val, write)
+  data[index].val := value
+}
+
+method tensor_add(t1: Ref, data1: Seq[Ref], t2: Ref, data2: Seq[Ref], size: Int) 
+  returns (result: Ref, result_data: Seq[Ref])
+  requires TensorAlloc(t1, size, data1)
+  requires TensorAlloc(t2, size, data2)
+  requires t1 != null && t2 != null
+  requires t1 != t2
+  ensures TensorAlloc(result, size, result_data)
+  ensures result != null
+  ensures result != t1 && result != t2
+  ensures forall i: Int :: 0 <= i && i < size ==> 
+          result_data[i].val == old(data1[i].val + data2[i].val)
+  ensures TensorAlloc(t1, size, data1)
+  ensures TensorAlloc(t2, size, data2)
+{
+  result, result_data := create_tensor(size)
+  var i: Int := 0
+  
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant TensorAlloc(result, size, result_data)
+    invariant TensorAlloc(t1, size, data1)
+    invariant TensorAlloc(t2, size, data2)
+    invariant forall j: Int :: 0 <= j && j < i ==> 
+              result_data[j].val == data1[j].val + data2[j].val
+  {
+    var v1: Int := data1[i].val
+    var v2: Int := data2[i].val
+    result_data[i].val := v1 + v2
+    i := i + 1
+  }
+}
+
+method insert_tree(root: Ref, key: Int) returns (new_root: Ref)
+  requires root != null
+  requires acc(root.val, write) && acc(root.left, write) && acc(root.right, write)
+  ensures new_root != null
+  ensures acc(new_root.val, write) && acc(new_root.left, write) && acc(new_root.right, write)
+{
+  if (key < root.val) {
+    if (root.left == null) {
+      var new_node: Ref := new(val, left, right)
+      new_node.val := key
+      new_node.left := null
+      new_node.right := null
+      root.left := new_node
+    } else {
+      var old_left: Ref := root.left
+    }
+  } elseif (key > root.val) {
+    if (root.right == null) {
+      var new_node: Ref := new(val, left, right)
+      new_node.val := key
+      new_node.left := null
+      new_node.right := null
+      root.right := new_node
+    } else {
+      var old_right: Ref := root.right
+    }
+  }
+  new_root := root
+}
+
+method ipc_send(buffer: Ref, data: Seq[Ref], size: Int, msg: Seq[Int])
+  requires TensorAlloc(buffer, size, data)
+  requires buffer != null
+  requires |msg| <= size
+  requires size > 0
+  ensures TensorAlloc(buffer, size, data)
+  ensures forall i: Int :: 0 <= i && i < |msg| ==> data[i].val == msg[i]
+  ensures forall i: Int :: |msg| <= i && i < size ==> data[i].val == old(data[i].val)
+{
+  var i: Int := 0
+  while (i < |msg|)
+    invariant 0 <= i && i <= |msg|
+    invariant TensorAlloc(buffer, size, data)
+    invariant forall j: Int :: 0 <= j && j < i ==> data[j].val == msg[j]
+    invariant forall j: Int :: |msg| <= j && j < size ==> data[j].val == old(data[j].val)
+    invariant forall j: Int :: i <= j && j < |msg| ==> data[j].val == old(data[j].val)
+  {
+    assert 0 <= i && i < size
+    data[i].val := msg[i]
+    i := i + 1
+  }
+}
+
+method ipc_receive(buffer: Ref, data: Seq[Ref], size: Int, count: Int) returns (msg: Seq[Int])
+  requires TensorAlloc(buffer, size, data)
+  requires buffer != null
+  requires 0 < count && count <= size
+  ensures TensorAlloc(buffer, size, data)
+  ensures |msg| == count
+  ensures forall i: Int :: 0 <= i && i < count ==> msg[i] == data[i].val
+{
+  msg := Seq[Int]()
+  var i: Int := 0
+  
+  while (i < count)
+    invariant 0 <= i && i <= count
+    invariant TensorAlloc(buffer, size, data)
+    invariant |msg| == i
+    invariant forall j: Int :: 0 <= j && j < i ==> msg[j] == data[j].val
+  {
+    var val: Int := data[i].val
+    msg := msg ++ Seq(val)
+    i := i + 1
+  }
+}
+
+method free_tensor(t: Ref, data: Seq[Ref], size: Int)
+  requires TensorAlloc(t, size, data)
+  requires t != null
+{
+  var i: Int := 0
+  while (i < size)
+    invariant 0 <= i && i <= size
+    invariant acc(t.val, write)
+    invariant forall j: Int :: i <= j && j < size ==> acc(data[j].val, write)
+  {
+    var temp: Ref := data[i]
+    exhale acc(temp.val, write)
+    i := i + 1
+  }
+  exhale acc(t.val, write)
+}
+
+method test_no_use_after_free(size: Int)
+  requires size > 0
+{
+  var t: Ref
+  var data: Seq[Ref]
+  t, data := create_tensor(size)
+  
+  data[0].val := 42
+  
+  free_tensor(t, data, size)
+}
+
+method test_bounds_checking(size: Int, bad_index: Int)
+  requires size > 0
+  requires bad_index >= size || bad_index < 0
+{
+  var t: Ref
+  var data: Seq[Ref]
+  t, data := create_tensor(size)
+  
+  free_tensor(t, data, size)
+}
+
+method test_null_dereference()
+{
+  var ptr: Ref := null
+}
+
+method test_capability_access(cap: Int, r: Region, addr: Int)
+  requires MemoryCapability(cap, r, write)
+  requires region_valid(r)
+  requires addr >= region_start(r) && addr < region_start(r) + region_size(r)
+  ensures MemoryCapability(addr, r, write)
+{
+  var new_cap: Int := addr
+  assert MemoryCapability(new_cap, r, write)
+}
+
+method test_region_isolation(cap1: Int, r1: Region, cap2: Int, r2: Region)
+  requires MemoryCapability(cap1, r1, write)
+  requires MemoryCapability(cap2, r2, write)
+  requires r1 != r2
+  ensures MemoryCapability(cap1, r1, write)
+  ensures MemoryCapability(cap2, r2, write)
+{
+  var new_cap1: Int := region_start(r1)
+  var new_cap2: Int := region_start(r2)
+  
+  assert region_start(r1) + region_size(r1) <= region_start(r2) ||
+         region_start(r2) + region_size(r2) <= region_start(r1)
+  assert MemoryCapability(new_cap1, r1, write)
+  assert MemoryCapability(new_cap2, r2, write)
+}

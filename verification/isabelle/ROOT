@@ -1,0 +1,5 @@
+session JAIDE_Verification in "." = "HOL-Analysis" +
+  options [document = false, browser_info = false, timeout = 300, quick_and_dirty = false]
+  theories
+    RSF_Invertibility
+    MemorySafety
